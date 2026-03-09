@@ -107,6 +107,20 @@ async def init_db(pool):
         """)
 
 
+def _parse_date(val):
+    """Parse date string to datetime, or return None."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val
+    try:
+        from datetime import datetime as dt
+        # Handle ISO format strings
+        return dt.fromisoformat(val.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
 async def save_opportunity(pool, opp: dict) -> int:
     """Save a new opportunity and return its ID."""
     async with pool.acquire() as conn:
@@ -130,7 +144,7 @@ async def save_opportunity(pool, opp: dict) -> int:
             opp.get("revenue_high", 0),
             opp.get("confidence", "medium"),
             opp.get("source_chat"),
-            opp.get("source_date"),
+            _parse_date(opp.get("source_date")),
             opp.get("source_snippet"),
             opp.get("reasoning"),
             opp.get("priority", 5),
