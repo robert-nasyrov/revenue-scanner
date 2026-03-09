@@ -157,6 +157,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔍 <b>Revenue Opportunity Scanner v2</b>\n\n"
         "Скан автоматический — каждый понедельник.\n\n"
         "/plan — План действий на сегодня\n"
+        "/review — Просмотр возможностей (свайп)\n"
         "/pipeline — Активные возможности\n"
         "/opp [id] — Подробнее\n"
         "/done [id] — Выполнено\n"
@@ -362,6 +363,76 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
+@owner_only
+async def cmd_review(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Tinder-style review of all opportunities."""
+    await _send_next_review(update.message, context)
+
+
+async def _send_next_review(message, context: ContextTypes.DEFAULT_TYPE):
+    """Send the next unreviewed opportunity."""
+    # Get offset from user_data
+    offset = context.user_data.get("review_offset", 0)
+    
+    async with pool.acquire() as conn:
+        opp = await conn.fetchrow("""
+            SELECT * FROM opportunities 
+            WHERE status = 'new'
+            ORDER BY id ASC
+            LIMIT 1 OFFSET $1
+        """, offset)
+        
+        total = await conn.fetchval("SELECT COUNT(*) FROM opportunities WHERE status = 'new'")
+    
+    if not opp:
+        context.user_data["review_offset"] = 0
+        await message.reply_text(
+            f"🏁 Все возможности просмотрены!\n"
+            f"Используй /stats для сводки."
+        )
+        return
+    
+    actions = json.loads(opp["action_items"]) if isinstance(opp["action_items"], str) else opp["action_items"]
+    actions_text = "\n".join(f"  • {a}" for a in actions[:3]) if actions else "  Нет шагов"
+    
+    conf_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(opp["confidence"], "⚪")
+    proj_emoji = {"zbs_media": "📺", "plan_banan": "🍌", "savecharvak": "🌿", "commercial": "🎬", "trabaja": "💼"}.get(opp["project"], "📌")
+    
+    reviewed = offset
+    remaining = total - offset
+    
+    text = (
+        f"📋 <b>РЕВЬЮ #{opp['id']}</b>  ({reviewed + 1}/{total})\n\n"
+        f"{proj_emoji} {opp['project']} | {conf_emoji} {opp['confidence']}\n"
+        f"<b>{opp['title']}</b>\n\n"
+        f"{opp['description'][:300]}\n\n"
+        f"💰 {opp['potential_revenue']} (${opp['revenue_low']}-${opp['revenue_high']})\n"
+        f"👤 {opp.get('contact_person', '-')} {opp.get('contact_handle', '')}\n\n"
+        f"<b>Шаги:</b>\n{actions_text}\n\n"
+        f"💬 <i>{(opp.get('source_snippet') or '-')[:150]}</i>\n"
+        f"📎 Чат: {opp.get('source_chat', '-')}"
+    )
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Оставить", callback_data=f"rvkeep_{opp['id']}"),
+            InlineKeyboardButton("🗑 Мусор", callback_data=f"rvtrash_{opp['id']}"),
+        ],
+        [
+            InlineKeyboardButton("⭐ Топ!", callback_data=f"rvstar_{opp['id']}"),
+            InlineKeyboardButton("⏭ Потом", callback_data=f"rvskip_{opp['id']}"),
+        ]
+    ]
+    
+    if len(text) > 4000:
+        text = text[:3950] + "..."
+    
+    await message.reply_text(
+        text, parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
 # ═══════════════════════════════════════════
 # CALLBACKS
 # ═══════════════════════════════════════════
@@ -455,6 +526,40 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await query.message.reply_text(analysis)
 
+    # ═══ REVIEW CALLBACKS ═══
+    elif data.startswith("rvkeep_"):
+        opp_id = int(data.replace("rvkeep_", ""))
+        await db.mark_in_progress(pool, opp_id)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(f"✅ #{opp_id} — оставлена в pipeline")
+        context.user_data["review_offset"] = context.user_data.get("review_offset", 0)
+        await _send_next_review(query.message, context)
+
+    elif data.startswith("rvtrash_"):
+        opp_id = int(data.replace("rvtrash_", ""))
+        await db.mark_skipped(pool, opp_id, "мусор (review)")
+        await db.save_feedback(pool, opp_id, "мусор")
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(f"🗑 #{opp_id} — удалена")
+        # Don't increment offset since this item is removed from 'new'
+        await _send_next_review(query.message, context)
+
+    elif data.startswith("rvstar_"):
+        opp_id = int(data.replace("rvstar_", ""))
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE opportunities SET priority = 1 WHERE id = $1", opp_id)
+        await db.mark_in_progress(pool, opp_id)
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(f"⭐ #{opp_id} — ТОП приоритет!")
+        context.user_data["review_offset"] = context.user_data.get("review_offset", 0)
+        await _send_next_review(query.message, context)
+
+    elif data.startswith("rvskip_"):
+        opp_id = int(data.replace("rvskip_", ""))
+        await query.edit_message_reply_markup(reply_markup=None)
+        context.user_data["review_offset"] = context.user_data.get("review_offset", 0) + 1
+        await _send_next_review(query.message, context)
+
 
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
@@ -468,6 +573,7 @@ def main():
     app.add_handler(CommandHandler("projects", cmd_projects))
     app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("rescan", cmd_rescan))
+    app.add_handler(CommandHandler("review", cmd_review))
     app.add_handler(CommandHandler("help", cmd_start))
     app.add_handler(CallbackQueryHandler(callback_handler))
     logger.info("Revenue Opportunity Scanner v2 starting...")
