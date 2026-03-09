@@ -366,6 +366,19 @@ async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CALLBACKS
 # ═══════════════════════════════════════════
 
+def _remove_opp_buttons(reply_markup, opp_id: int):
+    """Remove only buttons for specific opp_id, keep the rest."""
+    if not reply_markup:
+        return None
+    new_keyboard = []
+    opp_str = str(opp_id)
+    for row in reply_markup.inline_keyboard:
+        # Keep row if it doesn't contain this opp_id
+        if not any(opp_str in (btn.callback_data or "") for btn in row):
+            new_keyboard.append(row)
+    return InlineKeyboardMarkup(new_keyboard) if new_keyboard else None
+
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query.from_user.id != OWNER_ID:
@@ -378,20 +391,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         opp_id = int(data.replace("done_", ""))
         await db.mark_done(pool, opp_id)
         opp = await db.get_opportunity_by_id(pool, opp_id)
-        await query.edit_message_reply_markup(reply_markup=None)
+        new_markup = _remove_opp_buttons(query.message.reply_markup, opp_id)
+        await query.edit_message_reply_markup(reply_markup=new_markup)
         if opp:
             await query.message.reply_text(f"✅ #{opp_id} выполнена! +${opp['revenue_low']}-${opp['revenue_high']} 💰")
 
     elif data.startswith("skipask_"):
         opp_id = int(data.replace("skipask_", ""))
-        keyboard = [
-            [InlineKeyboardButton("Нереалистично", callback_data=f"skipr_{opp_id}_unrealistic")],
-            [InlineKeyboardButton("Не моё", callback_data=f"skipr_{opp_id}_notmine")],
-            [InlineKeyboardButton("Неактуально", callback_data=f"skipr_{opp_id}_outdated")],
-            [InlineKeyboardButton("Слишком мелко", callback_data=f"skipr_{opp_id}_toosmall")],
-            [InlineKeyboardButton("Сделаю позже", callback_data=f"skipr_{opp_id}_later")],
-        ]
-        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard))
+        # Replace this opp's row with reason buttons, keep others
+        keyboard = []
+        if query.message.reply_markup:
+            opp_str = str(opp_id)
+            for row in query.message.reply_markup.inline_keyboard:
+                if any(opp_str in (btn.callback_data or "") for btn in row):
+                    # Replace with reason buttons
+                    keyboard.append([InlineKeyboardButton("Нереалистично", callback_data=f"skipr_{opp_id}_unrealistic"),
+                                     InlineKeyboardButton("Не моё", callback_data=f"skipr_{opp_id}_notmine")])
+                    keyboard.append([InlineKeyboardButton("Неактуально", callback_data=f"skipr_{opp_id}_outdated"),
+                                     InlineKeyboardButton("Мелко", callback_data=f"skipr_{opp_id}_toosmall")])
+                    keyboard.append([InlineKeyboardButton("⬅️ Позже", callback_data=f"skipr_{opp_id}_later")])
+                else:
+                    keyboard.append(row)
+        await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
 
     elif data.startswith("skipr_"):
         parts = data.split("_", 2)
@@ -399,12 +420,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reason = parts[2]
         reason_text = {"unrealistic": "Нереалистично", "notmine": "Не моё", "outdated": "Неактуально", "toosmall": "Слишком мелко", "later": "Сделаю позже"}.get(reason, reason)
         if reason == "later":
-            await query.edit_message_reply_markup(reply_markup=None)
+            new_markup = _remove_opp_buttons(query.message.reply_markup, opp_id)
+            await query.edit_message_reply_markup(reply_markup=new_markup)
             await query.message.reply_text(f"⏰ #{opp_id} — напомню позже")
         else:
             await db.mark_skipped(pool, opp_id, reason_text)
             await db.save_feedback(pool, opp_id, reason_text)
-            await query.edit_message_reply_markup(reply_markup=None)
+            new_markup = _remove_opp_buttons(query.message.reply_markup, opp_id)
+            await query.edit_message_reply_markup(reply_markup=new_markup)
             await query.message.reply_text(f"⏭ #{opp_id} — {reason_text}. Учту в будущем.")
 
     elif data.startswith("detail_"):
