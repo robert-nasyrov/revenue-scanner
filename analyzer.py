@@ -218,7 +218,7 @@ async def analyze_chat(chat_name: str, messages_text: str, existing_profile: dic
         return {"opportunities": [], "profile_insights": {}}
 
 
-async def generate_daily_plan(opportunities: list, profile: dict, stats: dict) -> str:
+async def generate_daily_plan(opportunities: list, profile: dict, stats: dict, feedback: list = None) -> str:
     """
     Generate today's action plan based on active opportunities.
     Returns formatted text for Telegram.
@@ -252,13 +252,21 @@ async def generate_daily_plan(opportunities: list, profile: dict, stats: dict) -
     
     today = datetime.now().strftime("%d %B %Y, %A")
     
+    # Format feedback for self-learning
+    feedback_text = ""
+    if feedback:
+        feedback_text = "\n\nОБРАТНАЯ СВЯЗЬ РОБЕРТА (учти при выборе задач!):\n"
+        for fb in feedback:
+            feedback_text += f"- Отклонил '{fb.get('title', '?')}' ({fb.get('project', '?')}) — причина: {fb.get('reason', '?')}\n"
+        feedback_text += "\nНЕ предлагай похожие задачи! Адаптируй рекомендации под обратную связь."
+    
     prompt = DAILY_PLAN_PROMPT.format(
         context=BUSINESS_CONTEXT,
         profile=profile_text,
         opportunities=opp_text,
         stats=stats_text,
         today=today
-    )
+    ) + feedback_text
     
     try:
         response = client.messages.create(

@@ -101,6 +101,13 @@ async def init_db(pool):
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
 
+            CREATE TABLE IF NOT EXISTS feedback (
+                id SERIAL PRIMARY KEY,
+                opportunity_id INTEGER REFERENCES opportunities(id),
+                reason TEXT NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+
             CREATE INDEX IF NOT EXISTS idx_opp_status ON opportunities(status);
             CREATE INDEX IF NOT EXISTS idx_opp_project ON opportunities(project);
             CREATE INDEX IF NOT EXISTS idx_opp_priority ON opportunities(priority);
@@ -271,3 +278,24 @@ async def check_duplicate(pool, title: str, source_chat: str) -> bool:
             WHERE title = $1 AND source_chat = $2 AND status != 'skipped'
         """, title, source_chat)
         return row is not None
+
+
+async def save_feedback(pool, opp_id: int, reason: str):
+    """Save skip feedback for self-learning."""
+    async with pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO feedback (opportunity_id, reason) VALUES ($1, $2)
+        """, opp_id, reason)
+
+
+async def get_recent_feedback(pool, limit=20) -> list:
+    """Get recent feedback with opportunity details for self-learning."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT f.reason, o.title, o.project, o.potential_revenue, o.confidence
+            FROM feedback f
+            JOIN opportunities o ON f.opportunity_id = o.id
+            ORDER BY f.created_at DESC
+            LIMIT $1
+        """, limit)
+        return [dict(r) for r in rows]
