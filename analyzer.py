@@ -189,33 +189,39 @@ async def analyze_chat(chat_name: str, messages_text: str, existing_profile: dic
         messages=messages_text
     )
     
-    try:
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=4096,
-            temperature=0.3,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        text = response.content[0].text.strip()
-        
-        # Clean up potential markdown wrapping
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
-        
-        result = json.loads(text)
-        return result
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Claude response for {chat_name}: {e}")
-        logger.error(f"Raw response: {text[:500]}")
-        return {"opportunities": [], "profile_insights": {}}
-    except Exception as e:
-        logger.error(f"Claude API error for {chat_name}: {e}")
-        return {"opportunities": [], "profile_insights": {}}
+    import time
+    for attempt in range(3):
+        try:
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=4096,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}]
+            )
+
+            text = response.content[0].text.strip()
+
+            # Clean up potential markdown wrapping
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1]
+                if text.endswith("```"):
+                    text = text[:-3]
+                text = text.strip()
+
+            result = json.loads(text)
+            return result
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse Claude response for {chat_name}: {e}")
+            logger.error(f"Raw response: {text[:500]}")
+            return {"opportunities": [], "profile_insights": {}}
+        except Exception as e:
+            logger.warning(f"Claude API attempt {attempt+1}/3 for {chat_name}: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+
+    logger.error(f"Claude API failed after 3 attempts for {chat_name}")
+    return {"opportunities": [], "profile_insights": {}}
 
 
 async def generate_daily_plan(opportunities: list, profile: dict, stats: dict, feedback: list = None) -> str:
